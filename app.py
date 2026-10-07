@@ -269,20 +269,17 @@ if uploaded_file is not None:
 
             col_score, col_metrics = st.columns([1, 2])
 
-            with col_score:
-                st.metric(
-                    label="Overall ATS Score",
-                    value=f"{overall_score} / 100",
-                    delta=(
-                        "Ready to Apply"
-                        if overall_score >= 80
-                        else (
-                            "Needs Work"
-                            if overall_score >= 60
-                            else "High Risk of Rejection"
-                        ),
-                    ),
-                )
+delta_status = (
+    "Ready to Apply"
+    if overall_score >= 80
+    else ("Needs Work" if overall_score >= 60 else "High Risk of Rejection")
+)
+
+st.metric(
+    label="Overall ATS Score",
+    value=f"{overall_score} / 100",
+    delta=delta_status,
+)
                 if overall_score >= 80:
                     st.success("Strong resume! Passes standard ATS thresholds.")
                 elif overall_score >= 60:
