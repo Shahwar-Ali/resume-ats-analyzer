@@ -102,7 +102,6 @@ Return ONLY valid JSON matching this exact structure:
 }}
 """
 
-    # Chain of models to attempt if the first encounters high demand (503)
     candidate_models = [selected_model]
     for fallback in [
         "gemini-3.7-flash",
@@ -115,7 +114,6 @@ Return ONLY valid JSON matching this exact structure:
     last_error = ""
 
     for model in candidate_models:
-        # Retry up to 2 times per candidate model
         for attempt in range(2):
             try:
                 response = client.models.generate_content(
@@ -142,12 +140,10 @@ Return ONLY valid JSON matching this exact structure:
                 err_str = str(err)
                 last_error = err_str
 
-                # If 503 High Demand or 429 Rate Limit, wait briefly and retry/fallback
                 if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
                     time.sleep(2 * (attempt + 1))
                     continue
                 else:
-                    # If it is another fatal error (e.g., bad key), break immediately
                     return None, err_str
 
     return (
@@ -258,7 +254,7 @@ if uploaded_file is not None:
         if error_msg:
             st.error(f"Analysis failed: {error_msg}")
             st.info(
-                "Tip: Try switching to 'gemini-3.7-flash' or 'gemini-3.5-flash-lite' in the sidebar dropdown."
+                "Tip: Try switching models in the sidebar dropdown."
             )
         elif result:
             scores = result.get("scores", {})
@@ -269,17 +265,20 @@ if uploaded_file is not None:
 
             col_score, col_metrics = st.columns([1, 2])
 
-delta_status = (
-    "Ready to Apply"
-    if overall_score >= 80
-    else ("Needs Work" if overall_score >= 60 else "High Risk of Rejection")
-)
+            with col_score:
+                if overall_score >= 80:
+                    status_text = "Ready to Apply"
+                elif overall_score >= 60:
+                    status_text = "Needs Work"
+                else:
+                    status_text = "High Risk of Rejection"
 
-st.metric(
-    label="Overall ATS Score",
-    value=f"{overall_score} / 100",
-    delta=delta_status,
-)
+                st.metric(
+                    label="Overall ATS Score",
+                    value=f"{overall_score} / 100",
+                    delta=status_text,
+                )
+
                 if overall_score >= 80:
                     st.success("Strong resume! Passes standard ATS thresholds.")
                 elif overall_score >= 60:
