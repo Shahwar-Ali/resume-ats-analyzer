@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from typing import Optional, Tuple
 import docx
 import pypdf
@@ -50,12 +51,13 @@ def sanitize_latex(text: str) -> str:
 
 
 def analyze_resume_with_gemini(
-    resume_text: str, api_key: str, model_name: str
+    resume_text: str, api_key: str, selected_model: str
 ) -> Tuple[Optional[dict], Optional[str]]:
+    """Analyzes resume with retry logic and fallback models on 503/server spikes."""
     client = genai.Client(api_key=api_key)
 
     system_instruction = (
-        "You are an executive ATS (Applicant Tracking System) auditor and resume specialist. "
+        "You are an executive ATS auditor and resume specialist. "
         "Analyze the provided resume rigorously and return a strict JSON response. "
         "Each score must be an integer between 0 and 100. "
         "Do not invent contact info; report issues factually."
@@ -100,26 +102,58 @@ Return ONLY valid JSON matching this exact structure:
 }}
 """
 
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json",
-                temperature=0.2,
-            ),
-        )
+    # Chain of models to attempt if the first encounters high demand (503)
+    candidate_models = [selected_model]
+    for fallback in [
+        "gemini-3.7-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+    ]:
+        if fallback not in candidate_models:
+            candidate_models.append(fallback)
 
-        response_text = response.text.strip()
-        cleaned_json = re.sub(
-            r"^```(?:json)?\s*|\s*```$", "", response_text, flags=re.MULTILINE
-        ).strip()
-        parsed_data = json.loads(cleaned_json)
-        return parsed_data, None
+    last_error = ""
 
-    except Exception as err:
-        return None, str(err)
+    for model in candidate_models:
+        # Retry up to 2 times per candidate model
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        temperature=0.2,
+                    ),
+                )
+
+                response_text = response.text.strip()
+                cleaned_json = re.sub(
+                    r"^```(?:json)?\s*|\s*```$",
+                    "",
+                    response_text,
+                    flags=re.MULTILINE,
+                ).strip()
+                parsed_data = json.loads(cleaned_json)
+                return parsed_data, None
+
+            except Exception as err:
+                err_str = str(err)
+                last_error = err_str
+
+                # If 503 High Demand or 429 Rate Limit, wait briefly and retry/fallback
+                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                else:
+                    # If it is another fatal error (e.g., bad key), break immediately
+                    return None, err_str
+
+    return (
+        None,
+        f"Server busy across available endpoints. Last error: {last_error}",
+    )
 
 
 def calculate_weighted_overall_score(scores: dict) -> int:
@@ -140,7 +174,7 @@ def calculate_weighted_overall_score(scores: dict) -> int:
     return int(round(total))
 
 
-# Sidebar
+# Sidebar setup
 st.sidebar.title("⚙️ Configuration")
 
 default_key = ""
@@ -156,13 +190,13 @@ api_key = st.sidebar.text_input(
 
 model_choice = st.sidebar.selectbox(
     "Gemini Model",
-    options=["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"],
+    options=["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"],
     index=0,
 )
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "💡 *Your uploaded files are processed in-memory and are never stored on disk.*"
+    "💡 *Includes automatic retry & fallback handling if Google servers experience high demand.*"
 )
 
 # Main UI
@@ -179,7 +213,9 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     if uploaded_file.size > 5 * 1024 * 1024:
-        st.error("File size exceeds 5MB limit. Please upload a smaller document.")
+        st.error(
+            "File size exceeds 5MB limit. Please upload a smaller document."
+        )
         st.stop()
 
     file_extension = uploaded_file.name.split(".")[-1].lower()
@@ -201,7 +237,8 @@ if uploaded_file is not None:
     with st.expander("Preview Extracted Text"):
         st.text_area(
             "Raw Content",
-            value=resume_text[:2000] + ("..." if len(resume_text) > 2000 else ""),
+            value=resume_text[:2000]
+            + ("..." if len(resume_text) > 2000 else ""),
             height=150,
             disabled=True,
         )
@@ -220,7 +257,9 @@ if uploaded_file is not None:
 
         if error_msg:
             st.error(f"Analysis failed: {error_msg}")
-            st.info("Tip: Verify that your API key is valid and has sufficient quota.")
+            st.info(
+                "Tip: Try switching to 'gemini-3.7-flash' or 'gemini-3.5-flash-lite' in the sidebar dropdown."
+            )
         elif result:
             scores = result.get("scores", {})
             overall_score = calculate_weighted_overall_score(scores)
@@ -241,7 +280,7 @@ if uploaded_file is not None:
                             "Needs Work"
                             if overall_score >= 60
                             else "High Risk of Rejection"
-                        )
+                        ),
                     ),
                 )
                 if overall_score >= 80:
